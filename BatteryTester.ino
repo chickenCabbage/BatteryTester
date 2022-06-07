@@ -65,8 +65,8 @@ byte omegaChar[] = { //omega/ohms symbol
 
 #define voltsPin		A5	//PC5, ATmega pin 28
 #define ampsPin			A4	//PC3, ATmega pin 27
-#define MEASURMENTAMNT	255 //amount of measurments to take
-#define MEASURMENTDELAY	10	//interval between each measurment
+#define MEASURMENTAMNT	100 //amount of measurments to take
+#define MEASURMENTDELAY	1	//interval between each measurment
 
 #define MAXVOLTS	15.4	//max voltage measurable [volts]
 #define ISSADC		514		//steady state current [ADC]
@@ -78,6 +78,18 @@ byte omegaChar[] = { //omega/ohms symbol
  */
 #define SOC100	13.5 //100% state of charge voltage
 #define SOC0	10.5 //0% state of charge voltage
+
+#define tempPin A0 //PC0, ATmega pin 23
+#define MAXTEMP		65 //because of non-ideal convection+non linearity, 65 is actually more like 75 on the main load.
+#define DISPTEMP	50 //from this temp onward, the temp will be displayed at the "Ready." screen.
+#define HIGHTEMP	50
+#define LOWTEMP		23
+#define HIGHTEMPADC	360
+#define LOWTEMPADC	535
+/* the temperature is calculated based on empiric measurments of the voltage divider with
+ * the PTC's and a 10k resistor. temps measured with a FLIR camera.
+ * temp calculation is a floatMap() call.
+ */
 
 //bind the stage message and the loadState together
 struct stage {
@@ -127,6 +139,7 @@ void setup() {
 	pinMode(quickStartPin, INPUT_PULLUP);
 	pinMode(voltsPin, INPUT);
 	pinMode(ampsPin,  INPUT);
+	pinMode(tempPin, INPUT);
 	pinMode(delayPotPin, INPUT);
 	
 	lcd.begin(LCDCOL, LCDROW);
@@ -162,10 +175,33 @@ void loop() {
 	}
 	else {
 		setLoadState(OFF);
+		
+		//before starting a test, check the temperature:
+		float temp = floatMap(analogRead(tempPin), 535, 360, 22, 45);
+		//over a preset temp, override quickStart and begin showing the temperature:
+		if(temp >= DISPTEMP) {
+			String tempText = "";
+			if(temp >= MAXTEMP)	tempText += "     "; //center the text if displaying "OVER-HEAT!".
+			tempText += String(temp, 1) + "C";
+			printAll(tempText, true, 0, 2);	
+			quickStart = false;
+		}
+		else lcd.clear();
+		//if the temperature is too high, do not allow the user to proceed with the test.
+		if(temp >= MAXTEMP) {
+			printAll("   OVER-HEAT!", false, 500, 1);
+			return;
+			/* the return allows the re-checking of inputs and of the temp.
+			 * instead of using a while loop and delay(), we can use the printAll() delay
+			 * and the loop() function.
+			 */
+		}
+		//if the temperature is valid, you will arrive here:
+		
 		byte	stageCounter = 0;	//iterates over the stages array
 		float	avgRes = 0;			//resistance and voltage result arrives here
 		if(!quickStart) {
-			printAll("Ready.", true, 0, 1);
+			printAll("Ready.", false, 0, 1);
 			waitForPB();
 		}
 		
@@ -180,13 +216,15 @@ void loop() {
 		//calculate state of charge based on the OFF voltage measurment
 		avgRes = (avgRes / (STAGESAMNT-1)) * 1000; //average the sum and convert to miliR
 		avgRes -= 100; //remove the shunt's and the connection's resistance from the result (shunt is 73.33)
+		
+		digitalWrite(backlightPin, HIGH);
 		printAll("Avg res: " + String((int) avgRes), true, 0, 1);
 		lcd.setCursor(LCDCOL-2, 0);
 		lcd.print("m");
 		lcd.write(1); //show omega symbol for ohms units
 		float soc = floatMap(volts[0], SOC0, SOC100, 0, 100);
 		printAll("SOC: " + String(soc, 1) + "%", false, printDelay, 2);
-	
+		
 		waitForPB();
 	}
 }
@@ -282,15 +320,15 @@ void measureParams(byte stage) {
 	//calculate average values over measurmentAmnt measurments with measurmentDelay interval:
 	unsigned long voltsSum = 0, ampsSum = 0; //hold sums for avg calc
 	int counter = 0;
-	if(socOnly)	delay(100);
-	else delay(500); //wait to reach steady state
+	delay(100); //wait to reach steady state
 	for(counter=counter; counter<MEASURMENTAMNT; counter++) {
 		voltsSum += analogRead(voltsPin);
 		ampsSum += analogRead(ampsPin);
 		if(socOnly)	delay(MEASURMENTDELAY/2);
 		else		delay(MEASURMENTDELAY);
 	}
-	digitalWrite(backlightPin, HIGH);
+	if(printDelay > 200)
+		digitalWrite(backlightPin, HIGH);
 	float avgVolts = voltsSum / MEASURMENTAMNT;
 	float avgAmps  = ampsSum / MEASURMENTAMNT;
 
