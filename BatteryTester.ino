@@ -65,8 +65,8 @@ byte omegaChar[] = { //omega/ohms symbol
 
 #define voltsPin		A5	//PC5, ATmega pin 28
 #define ampsPin			A4	//PC3, ATmega pin 27
-#define MEASURMENTAMNT	100 //amount of measurments to take
-#define MEASURMENTDELAY	1	//interval between each measurment
+#define MEASURMENTAMNT	250 //amount of measurments to take
+#define MEASURMENTDELAY	2	//interval between each measurment
 
 #define MAXVOLTS	15.4	//max voltage measurable [volts]
 #define ISSADC		514		//steady state current [ADC]
@@ -80,8 +80,8 @@ byte omegaChar[] = { //omega/ohms symbol
 #define SOC0	10.5 //0% state of charge voltage
 
 #define tempPin A0 //PC0, ATmega pin 23
-#define MAXTEMP		65 //because of non-ideal convection+non linearity, 65 is actually more like 75 on the main load.
-#define DISPTEMP	50 //from this temp onward, the temp will be displayed at the "Ready." screen.
+#define MAXTEMP		50 //disallow testing resistance at this temp or higher
+#define DISPTEMP	40 //from this temp onward, the temp will be displayed at the "Ready." screen
 #define HIGHTEMP	50
 #define LOWTEMP		23
 #define HIGHTEMPADC	360
@@ -163,7 +163,7 @@ void setup() {
 
 void loop() {
 	setPrintDelay();
-	socOnly = digitalRead(socOnlyPin);
+	socOnly = !digitalRead(socOnlyPin);
 	
 	if(socOnly) {
 		setLoadState(OFF);
@@ -230,7 +230,7 @@ void loop() {
 }
 
 int setPrintDelay() {
-	quickStart = digitalRead(quickStartPin);
+	quickStart = !digitalRead(quickStartPin);
 	int pot = analogRead(delayPotPin);
 	/* get exponential delay:
 	 * y(1024)=10, y(512)=2.5
