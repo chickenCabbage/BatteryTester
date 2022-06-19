@@ -4,9 +4,9 @@
 #define debug false			//print to serial
 #define pbPin 1				//PD1, ATmega pin 3
 
-#define quickStartPin 2		//PD2, ATmega pin 4
-bool quickStart = false;	//skip the start PB and shorten display times?
-#define QUICKFACTOR 2		//by how much are quickStart delays faster?
+#define quickRunPin 2		//PD2, ATmega pin 4
+bool quickRun = false;		//skip the start PB and shorten display times?
+#define QUICKFACTOR 2		//by how much are quickRun delays faster?
 
 #define delayPotPin A3		//PC3, ATmega pin pin 26
 int printDelay = 1000;		//display time
@@ -26,7 +26,8 @@ LiquidCrystal lcd(rs, en, d4, d5, d6, d7);
 #define LCDCOL 16
 #define LCDROW 2
 
-#define indicatorPin 3	//PD3, ATmega pin 5
+#define pbLEDPin 3		//PD3, ATmega pin 5
+#define indicatorPin 4	//PD4, ATmega pin 4
 #define backlightPin 8	//PE0, ATmega pin 14
 
 #define hcPin A1 //PC2, ATmega pin 25
@@ -47,7 +48,7 @@ byte nextChar[] = { //filled arrow right symbol
 	B01100,
 	B01110,
 	B01111,
-	B01110,
+	B01110,    
 	B01100,
 	B01000
 };
@@ -65,7 +66,7 @@ byte omegaChar[] = { //omega/ohms symbol
 
 #define voltsPin		A5	//PC5, ATmega pin 28
 #define ampsPin			A4	//PC3, ATmega pin 27
-#define MEASURMENTAMNT	250 //amount of measurments to take
+#define MEASURMENTAMNT	512 //amount of measurments to take
 #define MEASURMENTDELAY	2	//interval between each measurment
 
 #define MAXVOLTS	15.4	//max voltage measurable [volts]
@@ -78,6 +79,9 @@ byte omegaChar[] = { //omega/ohms symbol
  */
 #define SOC100	13.5 //100% state of charge voltage
 #define SOC0	10.5 //0% state of charge voltage
+
+#define SOH100	0.011	//11 mR is a 100% healthy battery per WPIlib.
+#define SOH0	0.02	//25 mR is a dead battery.
 
 #define tempPin A0 //PC0, ATmega pin 23
 #define MAXTEMP		50 //disallow testing resistance at this temp or higher
@@ -108,6 +112,12 @@ const byte STAGESAMNT = sizeof(stages) / sizeof(stages[0]);
 float volts[STAGESAMNT]; //gloval storage of parameters
 float amps[STAGESAMNT];
 
+/*
+ * free pins:
+ * PB6, PC6
+ * 4, 6, 7
+ */
+
 
 void printAll(String msg, bool clr=false, int wait=0, byte line=0) { //clr, wait and line are optional
 	//clr - clear the display before showing msg
@@ -132,11 +142,12 @@ void setup() {
 	pinMode(d7, OUTPUT);
 	pinMode(hcPin, OUTPUT);
 	pinMode(lcPin, OUTPUT);
+	pinMode(pbLEDPin, OUTPUT);
+	pinMode(pbPin, INPUT_PULLUP);
 	pinMode(backlightPin, OUTPUT);
 	pinMode(indicatorPin, OUTPUT);
-	pinMode(pbPin, INPUT_PULLUP);
 	pinMode(socOnlyPin, INPUT_PULLUP);
-	pinMode(quickStartPin, INPUT_PULLUP);
+	pinMode(quickRunPin, INPUT_PULLUP);
 	pinMode(voltsPin, INPUT);
 	pinMode(ampsPin,  INPUT);
 	pinMode(tempPin, INPUT);
@@ -152,12 +163,12 @@ void setup() {
 	
 	if(debug) {
 		Serial.begin(9600);
-		if(!quickStart) {
+		if(!quickRun) {
 			lcd.print("Awaiting serial.");
 			while(!Serial);
 		}
 		Serial.println(String(STAGESAMNT) + "-stage ATP.");
-		Serial.println("QuickStart is " + String(quickStart) + ", display delay time: " + String(printDelay) + "ms.");
+		Serial.println("quickRun is " + String(quickRun) + ", display delay time: " + String(printDelay) + "ms.");
 	}
 }
 
@@ -166,10 +177,12 @@ void loop() {
 	socOnly = !digitalRead(socOnlyPin);
 	
 	if(socOnly) {
+		digitalWrite(indicatorPin, HIGH);
 		setLoadState(OFF);
 		measureParams(0);
 		printAll("V: " + String(volts[0], 2) + "V", true, 0, 1);
 		float soc = floatMap(volts[0], SOC0, SOC100, 0, 100);
+		digitalWrite(indicatorPin, LOW);
 		printAll("SOC: " + String(soc, 1) + "%", false, printDelay*10, 2);
 		
 	}
@@ -178,18 +191,27 @@ void loop() {
 		
 		//before starting a test, check the temperature:
 		float temp = floatMap(analogRead(tempPin), 535, 360, 22, 45);
-		//over a preset temp, override quickStart and begin showing the temperature:
+		//over a preset temp, override quickRun and begin showing the temperature:
 		if(temp >= DISPTEMP) {
 			String tempText = "";
-			if(temp >= MAXTEMP)	tempText += "     "; //center the text if displaying "OVER-HEAT!".
 			tempText += String(temp, 1) + "C";
+			
+			//center the text if displaying "OVER-HEAT!":
+			if(temp >= MAXTEMP) {
+				for(byte counter=0; counter<((LCDCOL - tempText.length())/2); counter++) {
+					tempText = " " + tempText;
+				}
+			}
 			printAll(tempText, true, 0, 2);	
-			quickStart = false;
+			quickRun = false;
 		}
 		else lcd.clear();
 		//if the temperature is too high, do not allow the user to proceed with the test.
 		if(temp >= MAXTEMP) {
-			printAll("   OVER-HEAT!", false, 500, 1);
+			digitalWrite(indicatorPin, HIGH);
+			printAll("   OVER-HEAT!", false, BLINKINTERVAL, 1);
+			digitalWrite(indicatorPin, LOW);
+			delay(BLINKINTERVAL);
 			return;
 			/* the return allows the re-checking of inputs and of the temp.
 			 * instead of using a while loop and delay(), we can use the printAll() delay
@@ -200,12 +222,13 @@ void loop() {
 		
 		byte	stageCounter = 0;	//iterates over the stages array
 		float	avgRes = 0;			//resistance and voltage result arrives here
-		if(!quickStart) {
+		if(!quickRun) {
 			printAll("Ready.", false, 0, 1);
 			waitForPB();
 		}
 		
 		//go over every stage:
+		digitalWrite(indicatorPin, HIGH);
 		for(stageCounter; stageCounter<STAGESAMNT; stageCounter++) {
 			doStage(stages[stageCounter], stageCounter);
 			if(stageCounter) {
@@ -217,56 +240,85 @@ void loop() {
 		avgRes = (avgRes / (STAGESAMNT-1)) * 1000; //average the sum and convert to miliR
 		avgRes -= 100; //remove the shunt's and the connection's resistance from the result (shunt is 73.33)
 		
-		digitalWrite(backlightPin, HIGH);
-		printAll("Avg res: " + String((int) avgRes), true, 0, 1);
-		lcd.setCursor(LCDCOL-2, 0);
-		lcd.print("m");
 		lcd.write(1); //show omega symbol for ohms units
 		float soc = floatMap(volts[0], SOC0, SOC100, 0, 100);
-		printAll("SOC: " + String(soc, 1) + "%", false, printDelay, 2);
+		digitalWrite(indicatorPin, LOW);
+		float soh = floatMap(avgRes, SOH0, SOH100, 0, 100);
+		digitalWrite(backlightPin, HIGH);
+		
+		if(!quickRun) {
+			//if you've got time: print warnings.
+			bool socWarn = soc < 50;
+			bool sohWarn = soh < 0;
+			if(socWarn || sohWarn) {
+				printAll("    WARNING!", true, 0, 1);
+				String warnings = "";
+				if(socWarn) warnings += "SOC";
+				if(sohWarn && socWarn) warnings += ", ";
+				if(sohWarn) warnings += "SOH";
+
+				//add spaces to center:
+				for(byte counter=0; counter<((LCDCOL - warnings.length())/2); counter++) {
+					warnings = " " + warnings;
+				}
+				printAll(warnings, false, printDelay, 2);
+				waitForPB();
+			}
+		}
+		
+		printAll("Avg Rint: " + String((int) avgRes), true, 0, 1);
+		lcd.setCursor(LCDCOL-2, 0);
+		lcd.print("m");
+		printAll("SOC: " + String(soc, 1), false, printDelay, 2);
 		
 		waitForPB();
 	}
 }
 
 int setPrintDelay() {
-	quickStart = !digitalRead(quickStartPin);
-	int pot = analogRead(delayPotPin);
-	/* get exponential delay:
-	 * y(1024)=10, y(512)=2.5
-	 * y is the delay in seconds, and x is the pot reading.
-	 * 
-	 *     x^2 * 10
-	 * y = --------
-	 *      1024^2
-	 */
-	//printDelay = ((10 * pot * pot) / (1024 * 1024)) * 1000;
-	//split into multiple lines to prevent overflow and return 0 or negatives:
-	float tempCalc = 10*pot;
-	tempCalc /= (1024/pot);
-	tempCalc /= 1024;
-	tempCalc *= 1000;
-	printDelay = tempCalc;
-	if(quickStart) printDelay /= QUICKFACTOR;
+	quickRun = !digitalRead(quickRunPin);
+	if(!quickRun) {
+		int pot = analogRead(delayPotPin);
+		/* get exponential delay:
+		 * y(1024)=10, y(512)=2.5
+		 * y is the delay in seconds, and x is the pot reading.
+		 * 
+		 *     x^2 * 10
+		 * y = --------
+		 *      1024^2
+		 */
+		//printDelay = ((10 * pot * pot) / (1024 * 1024)) * 1000;
+		//split into multiple lines to prevent overflow and return 0 or negatives:
+		float tempCalc = 10*pot;
+		tempCalc /= (1024/pot);
+		tempCalc /= 1024;
+		tempCalc *= 1000;
+		printDelay = tempCalc;
+	}
+	else {
+		printDelay = 0;
+	}
 }
 
 void waitForPB() {
-	delay(500);
+	delay(BLINKINTERVAL);
 	bool cursorOn = true; //start out showing the arrow symbol
+	bool resetted = false;
 	while(true) { //this will be broken by a return call
 		lcd.setCursor(LCDCOL-1, LCDROW-1); //show cursor in bottom-right corner
 		if(cursorOn) {
 			lcd.write(2);
-			digitalWrite(indicatorPin, HIGH);
+			digitalWrite(pbLEDPin, HIGH);
 		}
 		else {
 			lcd.print(" ");
-			digitalWrite(indicatorPin, LOW);
+			digitalWrite(pbLEDPin, LOW);
 		}
 		//wait for the blinkInterval, while checking for a button press every PushButtonCheckDelay:
 		int totalDelay = BLINKINTERVAL;
 		for(totalDelay; totalDelay>0; totalDelay-=PBCHECKDELAY) {
-			if(!digitalRead(pbPin)) return;
+			if(digitalRead(pbPin)) resetted = true; //wait for the user to let go of the button
+			if(resetted && !digitalRead(pbPin)) return;
 			delay(PBCHECKDELAY);
 		}
 		cursorOn = !cursorOn;
@@ -299,33 +351,39 @@ float floatMap(float val, float fromMin, float fromMax, float toMin, float toMax
 }
 
 void doStage(stage currStage, byte index) {
-	printAll("Testing state:", true, 0, 1);
-	printAll(currStage.msg, false, printDelay, 2);
+	if(!quickRun) {
+		printAll("Testing state:", true, 0, 1);
+		printAll(currStage.msg, false, printDelay, 2);
+	}
 
 	//take measurments:
 	setLoadState(currStage.loadState);
 	measureParams(index);
 	setLoadState(OFF);
-	
-	printAll("Voltage: " + String(volts[index], 3) + "V", true, 0, 1);
-	printAll("Current: " + String(amps[index], 3) + "A", false, printDelay, 2);
+
+	if(!quickRun) {
+		printAll("Voltage: " + String(volts[index], 3) + "V", true, 0, 1);
+		printAll("Current: " + String(amps[index], 3) + "A", false, printDelay, 2);
+	}
 }
 
 void measureParams(byte stage) {
 	//remove things that could affect the current:
 	lcd.clear();
-	digitalWrite(indicatorPin, LOW);
+	digitalWrite(pbLEDPin, LOW);
 	digitalWrite(backlightPin, LOW);
 	
 	//calculate average values over measurmentAmnt measurments with measurmentDelay interval:
 	unsigned long voltsSum = 0, ampsSum = 0; //hold sums for avg calc
-	int counter = 0;
+	int counter, maxCount;
+	if(quickRun)	maxCount = MEASURMENTAMNT/2;
+	else			maxCount = MEASURMENTAMNT;
 	delay(100); //wait to reach steady state
-	for(counter=counter; counter<MEASURMENTAMNT; counter++) {
+	for(counter=0; counter<maxCount; counter++) {
 		voltsSum += analogRead(voltsPin);
 		ampsSum += analogRead(ampsPin);
-		if(socOnly)	delay(MEASURMENTDELAY/2);
-		else		delay(MEASURMENTDELAY);
+		if(socOnly || quickRun)	delay(MEASURMENTDELAY/2);
+		else					delay(MEASURMENTDELAY);
 	}
 	if(printDelay > 200)
 		digitalWrite(backlightPin, HIGH);
