@@ -16,9 +16,9 @@ bool socOnly = false;	//show only SOC vs SOC+SOH
 
 #include <LiquidCrystal.h>
 #define rs 5	//PD5, ATmega pin 11
-#define en 9	//PB1, ATmega pin 15
+#define en 11	//PB3, ATmega pin 17
 #define d4 10	//PB2, ATmega pin 16
-#define d5 11	//PB3, ATmega pin 17
+#define d5 9	//PB1, ATmega pin 15
 #define d6 12	//PB4, ATmega pin 18
 #define d7 13	//PB5, ATmega pin 19
 LiquidCrystal lcd(rs, en, d4, d5, d6, d7);
@@ -81,7 +81,7 @@ byte omegaChar[] = { //omega/ohms symbol
 #define SOC0	10.5 //0% state of charge voltage
 
 #define SOH100	0.011	//11 mR is a 100% healthy battery per WPIlib.
-#define SOH0	0.02	//25 mR is a dead battery.
+#define SOH0	0.025	//25 mR is a dead battery.
 
 #define tempPin A0 //PC0, ATmega pin 23
 #define MAXTEMP		50 //disallow testing resistance at this temp or higher
@@ -109,7 +109,7 @@ stage stages[] = {
 	{ "High current", HC }
 };
 const byte STAGESAMNT = sizeof(stages) / sizeof(stages[0]);
-float volts[STAGESAMNT]; //gloval storage of parameters
+float volts[STAGESAMNT]; //global storage of parameters
 float amps[STAGESAMNT];
 
 /*
@@ -221,7 +221,7 @@ void loop() {
 		//if the temperature is valid, you will arrive here:
 		
 		byte	stageCounter = 0;	//iterates over the stages array
-		float	avgRes = 0;			//resistance and voltage result arrives here
+		float	avgRes = 0;			//resistance result arrives here
 		if(!quickRun) {
 			printAll("Ready.", false, 0, 1);
 			waitForPB();
@@ -231,7 +231,7 @@ void loop() {
 		digitalWrite(indicatorPin, HIGH);
 		for(stageCounter; stageCounter<STAGESAMNT; stageCounter++) {
 			doStage(stages[stageCounter], stageCounter);
-			if(stageCounter) {
+			if(stageCounter) { //if you're past the first stage (floating voltage test)
 				float delta = volts[0] - volts[stageCounter];
 				avgRes += (delta / amps[stageCounter]);
 			}
@@ -245,11 +245,11 @@ void loop() {
 		digitalWrite(indicatorPin, LOW);
 		float soh = floatMap(avgRes, SOH0, SOH100, 0, 100);
 		digitalWrite(backlightPin, HIGH);
-		
+
+		bool sohWarn = soh < 0;
 		if(!quickRun) {
 			//if you've got time: print warnings.
 			bool socWarn = soc < 50;
-			bool sohWarn = soh < 0;
 			if(socWarn || sohWarn) {
 				printAll("    WARNING!", true, 0, 1);
 				String warnings = "";
@@ -265,11 +265,17 @@ void loop() {
 				waitForPB();
 			}
 		}
-		
-		printAll("Avg Rint: " + String((int) avgRes), true, 0, 1);
-		lcd.setCursor(LCDCOL-2, 0);
-		lcd.print("m");
-		printAll("SOC: " + String(soc, 1), false, printDelay, 2);
+
+		//print SOH if it is okay. print resistance if not okay:
+		if(!sohWarn) 
+			printAll("SOH: " + String((int) soh) + "%", true, 0, 1);
+		else {
+			printAll("Avg Rint: " + String((int) avgRes), true, 0, 1);
+			lcd.setCursor(LCDCOL-2, 0);
+			lcd.print("m");
+			lcd.write(1);
+		}
+		printAll("SOC: " + String(soc, 1) + "%", false, printDelay, 2);
 		
 		waitForPB();
 	}
@@ -376,19 +382,27 @@ void measureParams(byte stage) {
 	//calculate average values over measurmentAmnt measurments with measurmentDelay interval:
 	unsigned long voltsSum = 0, ampsSum = 0; //hold sums for avg calc
 	int counter, maxCount;
-	if(quickRun)	maxCount = MEASURMENTAMNT/2;
-	else			maxCount = MEASURMENTAMNT;
+	if(!quickRun)	maxCount = MEASURMENTAMNT;
+	else			maxCount = MEASURMENTAMNT/QUICKFACTOR;
 	delay(100); //wait to reach steady state
 	for(counter=0; counter<maxCount; counter++) {
 		voltsSum += analogRead(voltsPin);
 		ampsSum += analogRead(ampsPin);
-		if(socOnly || quickRun)	delay(MEASURMENTDELAY/2);
+		if(socOnly || quickRun)	delay(MEASURMENTDELAY/QUICKFACTOR);
 		else					delay(MEASURMENTDELAY);
 	}
 	if(printDelay > 200)
 		digitalWrite(backlightPin, HIGH);
-	float avgVolts = voltsSum / MEASURMENTAMNT;
-	float avgAmps  = ampsSum / MEASURMENTAMNT;
+
+	float avgVolts, avgAmps;
+	if(!quickRun) {
+		avgVolts = voltsSum / MEASURMENTAMNT;
+		avgAmps  = ampsSum / MEASURMENTAMNT;
+	}
+	else {
+		avgVolts = (voltsSum * QUICKFACTOR) / MEASURMENTAMNT;
+		avgAmps  = (ampsSum * QUICKFACTOR) / MEASURMENTAMNT;
+	}
 
 	//map results by predefined calibration values:
 	avgVolts = floatMap(avgVolts, 0, 1024, 0, MAXVOLTS);
